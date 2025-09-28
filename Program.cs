@@ -16,16 +16,16 @@ namespace Blinkin
     }
 
     /// <summary>
-    /// Main application class coordinating the form and system tray components
+    /// Main application class coordinating the multi-screen manager and system tray
     /// </summary>
     public class BlinkinApplication
     {
-        private readonly BlinkForm _blinkForm;
+        private readonly MultiScreenManager _multiScreenManager;
         private readonly SystemTrayIcon _systemTrayIcon;
 
         public BlinkinApplication()
         {
-            _blinkForm = new BlinkForm(blinkInterval: 5000, blinkDuration: 100);
+            _multiScreenManager = new MultiScreenManager(blinkInterval: 5000, blinkDuration: 100);
             _systemTrayIcon = new SystemTrayIcon("blinkin");
         }
 
@@ -36,22 +36,158 @@ namespace Blinkin
         {
             _systemTrayIcon.PauseResumeRequested += OnPauseResumeRequested;
             _systemTrayIcon.ExitRequested += OnExitRequested;
-            _blinkForm.Start();
 
             Application.Run();
         }
 
         private void OnPauseResumeRequested(object? sender, EventArgs e)
         {
-            _blinkForm.TogglePause();
-            _systemTrayIcon.UpdatePauseResumeMenuItem(_blinkForm.IsPaused);
+            _multiScreenManager.TogglePause();
+            _systemTrayIcon.UpdatePauseResumeMenuItem(_multiScreenManager.IsPaused);
         }
 
         private void OnExitRequested(object? sender, EventArgs e)
         {
-            _blinkForm.Stop();
+            _multiScreenManager.Dispose();
             _systemTrayIcon.Dispose();
             Application.Exit();
+        }
+    }
+
+    /// <summary>
+    /// Manages blink forms across multiple screens and handles screen configuration changes
+    /// </summary>
+    public class MultiScreenManager : IDisposable
+    {
+        private readonly int _blinkInterval;
+        private readonly int _blinkDuration;
+        private readonly List<BlinkForm> _activeForms = [];
+        private readonly Timer _screenConfigurationCheckTimer;
+        private Screen[] _lastScreenConfiguration = [];
+        private bool _isPaused;
+
+        public MultiScreenManager(int blinkInterval, int blinkDuration)
+        {
+            _blinkInterval = blinkInterval;
+            _blinkDuration = blinkDuration;
+
+            _screenConfigurationCheckTimer = new Timer { Interval = 2000 };
+            _screenConfigurationCheckTimer.Tick += CheckForScreenConfigurationChanges;
+            _screenConfigurationCheckTimer.Start();
+
+            InitializeForms();
+        }
+
+        /// <summary>
+        /// Gets whether the blink reminders are currently paused
+        /// </summary>
+        public bool IsPaused => _isPaused;
+
+        private void InitializeForms()
+        {
+            _lastScreenConfiguration = Screen.AllScreens;
+            CreateFormsForAllScreens();
+        }
+
+        private void CreateFormsForAllScreens()
+        {
+            foreach (var screen in _lastScreenConfiguration)
+            {
+                CreateFormForScreen(screen);
+            }
+        }
+
+        private void CreateFormForScreen(Screen screen)
+        {
+            var form = new BlinkForm(_blinkInterval, _blinkDuration);
+            form.SetScreen(screen);
+            if (!_isPaused)
+            {
+                form.Start();
+            }
+            _activeForms.Add(form);
+        }
+
+        private void CheckForScreenConfigurationChanges(object? sender, EventArgs e)
+        {
+            var currentScreens = Screen.AllScreens;
+            if (HasScreenConfigurationChanged(currentScreens))
+                RecreateForms(currentScreens);
+        }
+
+        private bool HasScreenConfigurationChanged(Screen[] currentScreens)
+        {
+            if (_lastScreenConfiguration.Length != currentScreens.Length)
+                return true;
+
+            for (int i = 0; i < currentScreens.Length; i++)
+            {
+                if (!_lastScreenConfiguration[i].Bounds.Equals(currentScreens[i].Bounds))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private void RecreateForms(Screen[] currentScreens)
+        {
+            foreach (var form in _activeForms)
+            {
+                form.Stop();
+                form.Dispose();
+            }
+            _activeForms.Clear();
+
+            _lastScreenConfiguration = currentScreens;
+            CreateFormsForAllScreens();
+        }
+
+        /// <summary>
+        /// Starts blink animation on all screens
+        /// </summary>
+        public void Start()
+        {
+            _isPaused = false;
+            foreach (var form in _activeForms)
+            {
+                form.Start();
+            }
+        }
+
+        /// <summary>
+        /// Stops blink animation on all screens
+        /// </summary>
+        public void Stop()
+        {
+            _isPaused = true;
+            foreach (var form in _activeForms)
+            {
+                form.Stop();
+            }
+        }
+
+        /// <summary>
+        /// Toggles between paused and running states across all screens
+        /// </summary>
+        public void TogglePause()
+        {
+            if (_isPaused)
+                Start();
+            else
+                Stop();
+        }
+
+        public void Dispose()
+        {
+            _screenConfigurationCheckTimer?.Stop();
+            _screenConfigurationCheckTimer?.Dispose();
+
+            foreach (var form in _activeForms)
+            {
+                form.Stop();
+                form.Dispose();
+            }
+            _activeForms.Clear();
         }
     }
 
@@ -104,6 +240,16 @@ namespace Blinkin
             var timer = new Timer { Interval = interval };
             timer.Tick += async (sender, e) => await ExecuteBlinkAnimation();
             return timer;
+        }
+
+        /// <summary>
+        /// Sets the form location and size to match the specified screen
+        /// </summary>
+        /// <param name="screen">Target screen to display the form on</param>
+        public void SetScreen(Screen screen)
+        {
+            StartPosition = FormStartPosition.Manual;
+            Bounds = screen.Bounds;
         }
 
         /// <summary>
